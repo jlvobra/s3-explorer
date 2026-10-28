@@ -41,12 +41,20 @@ const S3_ALLOW_HOSTS: readonly string[] = (process.env.S3_ALLOW_HOSTS || '')
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
+// Linear trailing-slash strip. `/\/+$/` backtracks quadratically on an
+// attacker-controlled `x-s3-endpoint` header, so the walk is done by hand.
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 0x2f /* '/' */) end--;
+  return s.slice(0, end);
+}
+
 export function normalizeEndpoint(ep: string | undefined): string | undefined {
   if (!ep) return undefined;
   const trimmed = ep.trim();
   if (!trimmed) return undefined;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, '');
-  return 'https://' + trimmed.replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(trimmed)) return stripTrailingSlashes(trimmed);
+  return 'https://' + stripTrailingSlashes(trimmed);
 }
 
 // Parse an IPv4 in dotted / decimal / octal / hex form (inet_aton semantics)
