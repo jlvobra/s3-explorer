@@ -189,6 +189,18 @@ export interface TransferRecursiveOptions {
   flatten?: boolean;
 }
 
+// Returns the trailing "<segment>/" of a prefix, or '' when the prefix has no
+// trailing slash or ends in an empty segment ("//", "/"). Equivalent to
+// /([^/]+\/)$/ but linear: the regex backtracks quadratically on long runs of
+// slashes, and `sourcePrefix` comes from user input.
+function trailingFolder(prefix: string): string {
+  if (!prefix.endsWith('/')) return '';
+  const lastSlash = prefix.length - 1;
+  const start = prefix.lastIndexOf('/', lastSlash - 1) + 1;
+  if (start >= lastSlash) return '';
+  return prefix.slice(start);
+}
+
 /**
  * Stream-discover-and-transfer. The producer iterates `ListObjectsV2` pages
  * and pushes items onto a bounded queue; N parallel workers pull from the
@@ -240,8 +252,7 @@ export async function transferRecursive(
   // When `flatten` is true (folder rename flow), the caller has already
   // encoded the new name into `destPrefix` and we skip prepending the source
   // folder name to avoid a doubled path like `parent/newName/oldName/...`.
-  const folderNameMatch = sourcePrefix.match(/([^/]+\/)$/);
-  const folderName = flatten ? '' : (folderNameMatch ? folderNameMatch[1] : '');
+  const folderName = flatten ? '' : trailingFolder(sourcePrefix);
 
   // ── Producer: list pages and push to queue ───────────────────────────────
   const producer = (async (): Promise<void> => {
