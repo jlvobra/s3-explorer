@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<title>S3 Explorer</title>
+<!--
+  FOUC-prevention. Sets `<html data-theme>` BEFORE the stylesheet paints
+  so the user doesn't see a flash of the wrong theme on cold load. Kept
+  in a separate file (not inline) so the strict `script-src 'self'` CSP
+  applies cleanly without a hash. Same logic lives in
+  public/src/util/theme.ts for the runtime (toggle, system-pref listener).
+-->
+<script src="/theme-init.js"></script>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ============================================================
+     Auth overlay — covers entire viewport until user is logged in
+     ============================================================ -->
+<div id="auth-overlay" class="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="brand-mark">S3</div>
+      <div>
+        <div class="brand-title">S3 Explorer</div>
+        <div class="brand-sub">Inicio de sesión</div>
+      </div>
+    </div>
+
+    <!-- Login step 1: password -->
+    <form id="auth-login-form" class="auth-form" style="display:none">
+      <label>Usuario <input name="username" autocomplete="username" required autofocus/></label>
+      <label>Contraseña <input name="password" type="password" autocomplete="current-password" required/></label>
+      <p class="test-result err" id="auth-login-error"></p>
+      <button type="submit" class="btn btn-primary auth-submit">Continuar</button>
+    </form>
+
+    <!-- Login step 2: TOTP -->
+    <form id="auth-totp-form" class="auth-form" style="display:none">
+      <p class="hint" style="margin-top:0">Ingresa el código de 6 dígitos de tu app de autenticación (Google Authenticator, Authy, 1Password) o un código de recuperación.</p>
+      <label>Código <input name="code" autocomplete="one-time-code" inputmode="text" required autofocus placeholder="123456 o xxxxx-xxxxx"/></label>
+      <p class="test-result err" id="auth-totp-error"></p>
+      <button type="submit" class="btn btn-primary auth-submit">Iniciar sesión</button>
+      <button type="button" class="btn auth-back" id="auth-totp-back">← Cancelar</button>
+    </form>
+
+    <!-- TOTP enrollment -->
+    <div id="auth-enroll" class="auth-form" style="display:none">
+      <p class="hint" style="margin-top:0">
+        Para proteger tu cuenta, debes activar autenticación de dos factores.
+        Escanea este código QR con tu app de autenticación.
+      </p>
+      <div id="enroll-qr" class="enroll-qr"></div>
+      <p class="hint">
+        ¿No puedes escanear? Ingresa este código manualmente:
+        <code id="enroll-secret" class="enroll-secret"></code>
+      </p>
+      <form id="auth-enroll-confirm-form">
+        <label>Código de verificación <input name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="\d{6}" placeholder="123456"/></label>
+        <p class="test-result err" id="auth-enroll-error"></p>
+        <button type="submit" class="btn btn-primary auth-submit">Confirmar y activar</button>
+        <button type="button" class="btn auth-back" id="btn-regen-qr"><i data-icon="refresh"></i> Generar QR nuevo (si ya escaneaste mal)</button>
+      </form>
+    </div>
+
+    <!-- Recovery codes shown after enrollment -->
+    <div id="auth-recovery" class="auth-form" style="display:none">
+      <h3 style="margin: 0 0 8px"><i data-icon="shield_check" data-icon-size="18" style="color:var(--success); vertical-align:middle; margin-right:6px"></i>TOTP activado</h3>
+      <p class="hint" style="margin-top:0">
+        <strong>Guarda estos códigos de recuperación en un lugar seguro</strong> (1Password, papel impreso).
+        Cada uno se puede usar una sola vez si pierdes el acceso a tu app de autenticación.
+        <strong>No los verás de nuevo.</strong>
+      </p>
+      <div id="recovery-codes-list" class="recovery-codes"></div>
+      <button type="button" class="btn" id="btn-copy-recovery" style="margin-bottom:8px">Copiar todos al portapapeles</button>
+      <label class="check-confirm">
+        <input type="checkbox" id="chk-recovery-saved"/> He guardado los códigos en un lugar seguro
+      </label>
+      <button type="button" class="btn btn-primary auth-submit" id="btn-recovery-continue" disabled>Continuar</button>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">S3</div>
+      <div class="brand-text">
+        <div class="brand-title">S3 Explorer</div>
+        <div class="brand-sub">MinIO-style console</div>
+      </div>
+      <button class="btn-icon sidebar-collapse-btn" id="btn-sidebar-collapse" title="Colapsar barra lateral" aria-label="Colapsar barra lateral"><i data-icon="chevron_left"></i></button>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <span>Conexiones</span>
+        <button class="btn-icon" id="btn-add-conn" title="Nueva conexión"><i data-icon="plus"></i></button>
+      </div>
+      <ul id="connections" class="conn-tree"></ul>
+    </div>
+
+
+    <div class="sidebar-foot">
+      <span id="conn-status" class="status">Sin conexión</span>
+      <button class="btn-icon" id="btn-theme" title="Tema: automático (sigue al sistema)" style="margin-left:auto"><i data-icon="sun"></i></button>
+      <button class="btn-icon" id="btn-lock" title="Bloquear bóveda"><i data-icon="lock"></i></button>
+    </div>
+    <div class="resize-handle resize-handle-sidebar" data-resize="sidebar" aria-label="Redimensionar barra lateral" title="Arrastrar para redimensionar"></div>
+    <div class="sidebar-user" id="sidebar-user" style="display:none">
+      <span class="user-name" id="user-name"></span>
+      <span class="user-role" id="user-role"></span>
+      <div class="user-actions">
+        <button class="btn-icon" id="btn-my-account" title="Mi cuenta"><i data-icon="sliders"></i></button>
+        <button class="btn-icon" id="btn-admin-users" title="Usuarios" style="display:none"><i data-icon="users"></i></button>
+        <button class="btn-icon" id="btn-logout" title="Cerrar sesión"><i data-icon="logout"></i></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Two-pane wrapper. The right pane is cloned at runtime from the left by
+       panes/init.ts when dual mode is enabled; it stays hidden otherwise. -->
+  <div class="panes-wrap" id="panes-wrap">
+    <section class="pane active" data-pane="left">
+      <header class="toolbar">
+        <button class="btn-icon mobile-only" id="btn-menu" title="Menú" aria-label="Abrir menú"><i data-icon="menu"></i></button>
+        <div class="nav-buttons">
+          <button class="btn-icon nav-btn" data-el="btn-nav-back" title="Atrás (Alt + ←)" aria-label="Atrás" disabled><i data-icon="chevron_left"></i></button>
+          <button class="btn-icon nav-btn" data-el="btn-nav-fwd" title="Adelante (Alt + →)" aria-label="Adelante" disabled><i data-icon="chevron_right"></i></button>
+        </div>
+        <div class="crumbs" data-el="breadcrumbs"></div>
+        <div class="search-box">
+          <input type="text" data-el="search-input" placeholder="Buscar... (Enter = todo el bucket)" disabled />
+          <button data-el="btn-search-clear" class="btn-icon" title="Limpiar" style="display:none"><i data-icon="close"></i></button>
+        </div>
+        <div class="actions">
+          <label class="toggle-deleted" data-el="toggle-deleted" style="display:none">
+            <input type="checkbox" class="chk" data-el="chk-deleted"/> Mostrar eliminados
+          </label>
+          <button data-el="btn-versioning" class="btn" style="display:none"><i data-icon="lock"></i> Versionado: ?</button>
+          <span data-el="index-status-badge" class="index-status-badge" style="display:none"></span>
+          <button data-el="btn-reindex" class="btn" title="Reconstruir el índice de búsqueda FTS5 para este bucket"><i data-icon="reindex"></i> Reindexar</button>
+          <button data-el="btn-new-folder" class="btn" disabled><i data-icon="folder_plus"></i> Nueva carpeta</button>
+          <button data-el="btn-upload" class="btn btn-primary" disabled><i data-icon="upload"></i> Subir archivos</button>
+          <input type="file" data-el="file-input" multiple hidden />
+          <button data-el="btn-refresh" class="btn-icon" title="Refrescar"><i data-icon="refresh"></i></button>
+          <button class="btn-icon btn-sync-nav dual-only-visible" data-el="btn-sync-nav" title="Activar navegación sincronizada" aria-label="Sincronizar navegación entre paneles"><i data-icon="link"></i></button>
+          <button id="btn-toggle-dual" class="btn-icon dual-only-trigger" title="Vista de dos paneles" aria-label="Vista de dos paneles"><i data-icon="split"></i></button>
+          <button class="btn-icon btn-close-pane" data-el="btn-close-pane" title="Cerrar este panel" aria-label="Cerrar panel"><i data-icon="close"></i></button>
+        </div>
+      </header>
+      <div data-el="search-banner" class="search-banner" style="display:none"></div>
+
+      <div class="content" data-el="content">
+        <div class="empty" data-el="empty">
+          <h2>Bienvenido a S3 Explorer</h2>
+          <p>Crea una conexión para empezar a navegar tus archivos en cualquier almacenamiento compatible con S3 (AWS S3, MinIO, Wasabi, Backblaze B2, Cloudflare R2, etc.).</p>
+          <button class="btn btn-primary" id="btn-first-conn"><i data-icon="plus"></i> Agregar conexión</button>
+        </div>
+        <div class="dropzone" data-el="dropzone"></div>
+        <table class="grid" data-el="grid" style="display:none">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" class="chk" data-el="check-all"/></th>
+              <th class="sortable" data-sort="name">Nombre <span class="sort-indicator"></span></th>
+              <th class="col-size sortable" data-sort="size">Tamaño <span class="sort-indicator"></span></th>
+              <th class="col-date sortable" data-sort="modified">Modificado <span class="sort-indicator"></span></th>
+              <th class="col-act"></th>
+            </tr>
+          </thead>
+          <tbody data-el="grid-body"></tbody>
+        </table>
+        <div class="batch-bar" data-el="batch-bar" style="display:none">
+          <span data-el="batch-info"></span>
+          <button class="btn btn-danger" data-el="btn-batch-delete"><i data-icon="trash"></i> Eliminar seleccionados</button>
+        </div>
+      </div>
+
+      <!-- Object Info Panel — one per pane (cloned with the pane). -->
+      <aside class="info-panel" data-el="info-panel">
+        <div class="resize-handle resize-handle-info" data-resize="info" aria-label="Redimensionar panel" title="Arrastrar para redimensionar"></div>
+        <header>
+          <div class="info-title">
+            <span class="ft-badge def" data-el="info-icon">·</span>
+            <div class="info-name-wrap">
+              <div class="info-name" data-el="info-name"></div>
+              <div class="info-path" data-el="info-path"></div>
+            </div>
+          </div>
+          <button class="btn-icon" data-el="info-close" title="Cerrar"><i data-icon="close"></i></button>
+        </header>
+
+        <div class="info-actions">
+          <button class="btn btn-primary" data-el="info-preview"><i data-icon="eye"></i> Vista previa</button>
+          <button class="btn" data-el="info-download"><i data-icon="download"></i> Descargar</button>
+          <button class="btn" data-el="info-share"><i data-icon="link"></i> Enlace temporal</button>
+          <button class="btn" data-el="info-versions"><i data-icon="history"></i> Versiones</button>
+          <button class="btn" data-el="info-rename"><i data-icon="rename"></i> Renombrar</button>
+          <button class="btn btn-danger" data-el="info-delete"><i data-icon="trash"></i> Eliminar</button>
+        </div>
+
+        <div class="info-section">
+          <h4>Object Info</h4>
+          <dl data-el="info-meta">
+            <div><dt>Tamaño</dt><dd data-k="size">—</dd></div>
+            <div><dt>Modificado</dt><dd data-k="modified">—</dd></div>
+            <div><dt>Content-Type</dt><dd data-k="content-type">—</dd></div>
+            <div><dt>ETag</dt><dd data-k="etag" class="mono">—</dd></div>
+            <div><dt>Storage Class</dt><dd data-k="storage-class">—</dd></div>
+            <div><dt>Versión</dt><dd data-k="version-id" class="mono">—</dd></div>
+          </dl>
+        </div>
+
+        <div class="info-section" data-el="info-user-meta-wrap" style="display:none">
+          <h4>Metadata personalizada</h4>
+          <dl data-el="info-user-meta"></dl>
+        </div>
+      </aside>
+    </section>
+  </div>
+</div>
+
+<!-- Modal: Passphrase / Vault -->
+<div class="modal-backdrop" id="modal-passphrase" style="display:none">
+  <div class="modal">
+    <header><h3 id="passphrase-title">Bóveda de credenciales</h3></header>
+    <form id="form-passphrase">
+      <p class="hint" id="passphrase-hint" style="margin-top:0">
+        Tus conexiones S3 se cifran localmente con AES-256-GCM derivado de una contraseña que solo tú conoces.
+        Esta contraseña no se envía al servidor. Si la olvidas, deberás reingresar tus conexiones.
+      </p>
+      <label>Contraseña <input name="passphrase" type="password" required autofocus autocomplete="off"/></label>
+      <label id="passphrase-confirm-wrap">Confirmar <input name="confirm" type="password" autocomplete="off"/></label>
+      <p class="test-result err" id="passphrase-error"></p>
+      <footer>
+        <button type="button" class="btn" id="btn-passphrase-reset" style="margin-right:auto; display:none">Olvidé mi contraseña — borrar bóveda</button>
+        <button type="submit" class="btn btn-primary">Desbloquear</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Connection -->
+<div class="modal-backdrop" id="modal-conn" style="display:none">
+  <div class="modal">
+    <header><h3 id="conn-modal-title">Nueva conexión S3</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <form id="form-conn">
+      <input type="hidden" name="id" />
+      <div class="import-row">
+        <button type="button" class="btn" id="btn-import-conn"><i data-icon="upload"></i> Importar desde archivo (.cfg / .env)</button>
+        <input type="file" id="import-conn-file" accept=".cfg,.env,.vultrcfg,.awscfg,.miniocfg,.r2cfg,.txt,*" hidden />
+        <span class="test-result" id="import-result"></span>
+      </div>
+      <label>Nombre <input name="name" required placeholder="Mi MinIO local"/></label>
+      <label>Endpoint <input name="endpoint" placeholder="https://s3.amazonaws.com  o  http://localhost:9000"/></label>
+      <p class="hint">Déjalo vacío para AWS S3 oficial. Para MinIO/otros, ingresa la URL completa.</p>
+      <div class="row">
+        <label>Región <input name="region" value="us-east-1"/></label>
+        <label class="check"><input type="checkbox" name="pathStyle" checked/> Path-style (MinIO)</label>
+      </div>
+      <label>Access Key <input name="accessKey" required autocomplete="off"/></label>
+      <label>Secret Key <input name="secretKey" type="password" required autocomplete="off"/></label>
+      <label>Session Token (opcional) <input name="sessionToken" autocomplete="off"/></label>
+      <label>Buckets (opcional, uno por línea)
+        <textarea name="buckets" rows="3" placeholder="mi-bucket-1&#10;mi-bucket-2" style="font-family:inherit; font-size:14px; padding:9px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); width:100%; resize:vertical"></textarea>
+      </label>
+      <p class="hint">Déjalo vacío para autodetectar todos los buckets. Especifícalos si tu IAM no permite <code>s3:ListAllMyBuckets</code>.</p>
+      <footer>
+        <button type="button" class="btn" id="btn-test-conn">Probar</button>
+        <span id="test-result" class="test-result"></span>
+        <button type="submit" class="btn btn-primary">Guardar</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Bucket create -->
+<div class="modal-backdrop" id="modal-bucket" style="display:none">
+  <div class="modal">
+    <header><h3>Crear bucket</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <form id="form-bucket">
+      <label>Nombre <input name="name" required pattern="[a-z0-9.\-]{3,63}" placeholder="mi-bucket"/></label>
+      <p class="hint">Solo minúsculas, números, puntos y guiones (3-63 caracteres).</p>
+      <footer><button type="submit" class="btn btn-primary">Crear</button></footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Folder -->
+<div class="modal-backdrop" id="modal-folder" style="display:none">
+  <div class="modal">
+    <header><h3>Nueva carpeta</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <form id="form-folder">
+      <label>Nombre <input name="name" required placeholder="documentos"/></label>
+      <footer><button type="submit" class="btn btn-primary">Crear</button></footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Rename -->
+<div class="modal-backdrop" id="modal-rename" style="display:none">
+  <div class="modal">
+    <header><h3>Renombrar</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <form id="form-rename">
+      <input type="hidden" name="sourceKey"/>
+      <label>Nuevo nombre <input name="newName" required/></label>
+      <footer><button type="submit" class="btn btn-primary">Renombrar</button></footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Overwrite confirmation (versioning OFF) -->
+<div class="modal-backdrop" id="modal-overwrite" style="display:none">
+  <div class="modal">
+    <header><h3>Conflicto de archivos</h3></header>
+    <div class="modal-body">
+      <div class="warn-block" id="overwrite-warn-block">
+        <i data-icon="warn" data-icon-size="18" style="color:var(--warn); flex-shrink:0; margin-top:1px"></i>
+        <div style="flex:1">
+          <strong id="overwrite-conflict-count">N</strong> archivo(s) ya existen en
+          <code id="overwrite-dest"></code>. El versionado de este bucket está
+          <strong style="color:var(--danger)">desactivado</strong>:
+          reemplazar es <strong>irreversible</strong>.
+        </div>
+      </div>
+      <div class="overwrite-list" id="overwrite-list"></div>
+      <p class="hint" id="overwrite-new-info" style="margin:12px 0 4px"></p>
+    </div>
+    <footer>
+      <button type="button" class="btn" id="btn-overwrite-cancel">Cancelar todo</button>
+      <button type="button" class="btn" id="btn-overwrite-skip">Saltar conflictos</button>
+      <button type="button" class="btn btn-danger-solid" id="btn-overwrite-all">Reemplazar todos</button>
+      <button type="button" class="btn btn-primary" id="btn-overwrite-rename">Renombrar y subir</button>
+    </footer>
+  </div>
+</div>
+
+<!-- Modal: Preview -->
+<div class="modal-backdrop" id="modal-preview" style="display:none">
+  <div class="modal modal-lg">
+    <header>
+      <h3 id="preview-title">Preview</h3>
+      <div class="header-actions">
+        <button class="btn" id="btn-share">Enlace</button>
+        <button class="btn btn-primary" id="btn-download">Descargar</button>
+        <button class="btn-icon" data-close><i data-icon="close"></i></button>
+      </div>
+    </header>
+    <div id="preview-body" class="preview-body"></div>
+    <div class="preview-meta">
+      <div id="preview-info"></div>
+      <div>
+        <button class="btn" id="btn-show-versions">Ver versiones</button>
+      </div>
+    </div>
+    <div id="versions-panel" class="versions-panel" style="display:none"></div>
+  </div>
+</div>
+
+<!-- (Info panel moved inside each pane — see <section data-pane="..."> above.) -->
+
+<!-- Modal: Transfer confirm — picks copy / move before kicking off the SSE run -->
+<div class="modal-backdrop" id="modal-transfer-confirm" style="display:none">
+  <div class="modal">
+    <header><h3 id="transfer-confirm-title">Transferir archivos</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <div style="padding:18px">
+      <p class="hint" style="margin-top:0">
+        <span id="transfer-confirm-count">0</span> elemento(s) desde
+        <code id="transfer-confirm-source"></code>
+        hacia
+        <code id="transfer-confirm-dest"></code>.
+      </p>
+      <p class="hint" id="transfer-confirm-cross" style="display:none; color:var(--warn)">
+        <i data-icon="warn" style="vertical-align:middle; margin-right:4px"></i>Transferencia entre conexiones distintas — los bytes pasan por el servidor.
+      </p>
+      <footer style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; margin-top:16px">
+        <button type="button" class="btn" id="btn-transfer-cancel">Cancelar</button>
+        <button type="button" class="btn" id="btn-transfer-do-copy">Copiar</button>
+        <button type="button" class="btn btn-primary" id="btn-transfer-do-move">Mover</button>
+      </footer>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Transfer progress — consumes the POST /api/transfer SSE stream -->
+<div class="modal-backdrop" id="modal-transfer-progress" style="display:none">
+  <div class="modal modal-lg">
+    <header>
+      <h3 id="transfer-progress-title">Transferencia en curso</h3>
+      <div class="header-actions">
+        <button class="btn" id="btn-transfer-abort">Cancelar</button>
+        <button class="btn-icon" id="btn-transfer-close" style="display:none" data-close><i data-icon="close"></i></button>
+      </div>
+    </header>
+    <div style="padding:18px">
+      <div class="transfer-progress-bar"><div id="transfer-progress-fill"></div></div>
+      <p class="hint" id="transfer-progress-summary" style="margin:8px 0 4px">Preparando…</p>
+      <div class="transfer-item-list" id="transfer-item-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Folder delete progress — SSE-streamed recursive delete -->
+<div class="modal-backdrop" id="modal-folder-delete" style="display:none">
+  <div class="modal">
+    <header>
+      <h3 id="folder-delete-title">Eliminando carpeta</h3>
+      <div class="header-actions">
+        <button class="btn" id="btn-folder-delete-abort">Cancelar</button>
+        <button class="btn-icon" id="btn-folder-delete-close" style="display:none" data-close><i data-icon="close"></i></button>
+      </div>
+    </header>
+    <div style="padding:18px">
+      <div class="transfer-progress-bar"><div id="folder-delete-progress-fill"></div></div>
+      <p class="hint" id="folder-delete-summary" style="margin:8px 0 4px">Preparando…</p>
+      <p class="hint" id="folder-delete-current" style="margin:6px 0 4px; color:var(--text-dim); font-size:11.5px; font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis"></p>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Folder rename — simple input, submission delegated to the existing transfer endpoint -->
+<div class="modal-backdrop" id="modal-folder-rename" style="display:none">
+  <div class="modal">
+    <header><h3>Renombrar carpeta</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <form id="form-folder-rename">
+      <p class="hint" style="margin-top:0">Actual: <code id="folder-rename-current"></code></p>
+      <label>Nuevo nombre <input name="newName" required autocomplete="off" placeholder="mi-carpeta"/></label>
+      <p class="hint">Sin barras (<code>/</code>). Renombrar mueve todo el contenido — sobre carpetas grandes puede tardar.</p>
+      <p class="test-result err" id="folder-rename-error"></p>
+      <footer>
+        <button type="button" class="btn" data-close>Cancelar</button>
+        <button type="submit" class="btn btn-primary">Renombrar</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: My account -->
+<div class="modal-backdrop" id="modal-account" style="display:none">
+  <div class="modal">
+    <header><h3>Mi cuenta</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <nav class="modal-tabs" data-tabs="account">
+      <button type="button" class="modal-tab active" data-tab="password">Contraseña</button>
+      <button type="button" class="modal-tab" data-tab="totp">Segundo factor</button>
+      <button type="button" class="modal-tab" data-tab="recovery">Recuperación</button>
+    </nav>
+    <div class="modal-tab-content" data-tab-panel="password">
+      <form id="form-change-password">
+        <!-- Hidden username field so the browser / password managers can
+             associate the password change with an account (a11y + autofill
+             guidance). Populated from the session in account.ts. -->
+        <input type="text" name="username" id="change-pw-username" autocomplete="username" hidden aria-hidden="true" tabindex="-1"/>
+        <label>Contraseña actual <input name="current" type="password" required autocomplete="current-password"/></label>
+        <label>Nueva contraseña <input name="next" type="password" required minlength="8" autocomplete="new-password"/></label>
+        <p class="test-result" id="account-pw-msg"></p>
+        <button type="submit" class="btn btn-primary">Actualizar contraseña</button>
+      </form>
+    </div>
+    <div class="modal-tab-content" data-tab-panel="totp" hidden>
+      <p style="display:flex; align-items:center; gap:10px; margin:0 0 12px">
+        <i data-icon="shield_check" data-icon-size="18" style="color:var(--success)"></i>
+        <strong style="color:var(--text)">TOTP activado</strong>
+      </p>
+      <p class="hint" style="margin-top:0">
+        Tu cuenta está protegida con autenticación de dos factores. Si pierdes el acceso a tu app de autenticación, usa un código de recuperación (pestaña "Recuperación").
+      </p>
+      <p class="hint">
+        Para cambiar la app o el dispositivo, contacta a un administrador para reiniciar tu enrollment.
+      </p>
+    </div>
+    <div class="modal-tab-content" data-tab-panel="recovery" hidden>
+      <p class="hint" style="margin-top:0">Regenerar invalida los anteriores. Asegúrate de guardar los nuevos.</p>
+      <button type="button" class="btn" id="btn-regen-recovery"><i data-icon="refresh"></i> Regenerar códigos</button>
+      <div id="new-recovery-codes" class="recovery-codes" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Users admin -->
+<div class="modal-backdrop" id="modal-users" style="display:none">
+  <div class="modal modal-lg">
+    <header><h3>Usuarios</h3><button class="btn-icon" data-close><i data-icon="close"></i></button></header>
+    <div class="modal-body">
+      <table class="grid" style="margin-bottom:16px">
+        <thead><tr><th>Usuario</th><th>Rol</th><th>TOTP</th><th>Último login</th><th>Estado</th><th></th></tr></thead>
+        <tbody id="users-tbody"></tbody>
+      </table>
+      <div style="margin-top:12px">
+        <button type="button" class="btn" id="btn-toggle-create-user" data-expand="form-create-user"><i data-icon="plus"></i> Nuevo usuario</button>
+        <form id="form-create-user" hidden style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:8px; align-items:end; margin-top:14px; padding:14px; background:var(--surface-2); border:1px solid var(--border); border-radius:8px">
+          <label>Usuario <input name="username" required pattern="[a-zA-Z0-9_.\-]{2,32}" autocomplete="off"/></label>
+          <label>Contraseña inicial <input name="password" type="password" required minlength="8" autocomplete="new-password"/></label>
+          <label>Rol
+            <select name="role">
+              <option value="user">Usuario</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+          <button type="submit" class="btn btn-primary">Crear</button>
+        </form>
+        <p class="test-result" id="create-user-msg"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast-container"></div>
+
+<script type="module" src="/dist/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+# =============================================================================
+# S3 Explorer — GitHub Actions CI
+# =============================================================================
+# Mirrors the six gates the project needs before anything lands on `main`:
+#
+#   secrets     — gitleaks secret scan (.gitleaks.toml)
+#   audit       — npm audit --audit-level=high
+#   lint        — tsc typecheck (server + web) + hadolint on the Dockerfile
+#   test        — vitest unit + integration (needs the better-sqlite3 binding)
+#   caddyfile   — caddy validate on the Caddyfile
+#   image-scan  — Trivy filesystem scan (HIGH/CRITICAL, unfixed ignored)
+#
+# `audit` and `lint` install with --ignore-scripts: better-sqlite3's postinstall
+# (node-gyp rebuild) needs python3/make/g++, and neither job touches the native
+# binding — only .d.ts types and package-lock.json. `test` does need it, so it
+# installs the toolchain and runs a full `npm ci`.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Secret scanning — full history + working tree
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # ---------------------------------------------------------------------------
+  # Dependency audit — high severity only
+  # ---------------------------------------------------------------------------
+  audit:
+    name: audit (npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm audit --audit-level=high
+
+  # ---------------------------------------------------------------------------
+  # Lint — TypeScript typecheck across both projects + Dockerfile
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint (typecheck + hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm run typecheck
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+  # ---------------------------------------------------------------------------
+  # Tests — vitest unit + integration
+  #
+  # This job DOES need better-sqlite3's native binding (the auth tests boot the
+  # real src/db), so the toolchain is installed and `npm ci` runs with scripts
+  # enabled.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (vitest)
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install build toolchain for better-sqlite3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 make g++
+      - run: npm ci --no-audit --no-fund
+      - run: npx vitest run
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Caddyfile validation — separate job because it needs the caddy image
+  # (run via `docker run`: the caddy image has no Node runtime, so putting the
+  # whole job in a container would break actions/checkout)
+  # ---------------------------------------------------------------------------
+  caddyfile:
+    name: caddyfile (caddy validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/etc/caddy" \
+            -w /etc/caddy \
+            -e DOMAIN=example.com \
+            caddy:2-alpine caddy validate --config Caddyfile
+
+  # ---------------------------------------------------------------------------
+  # CVE scan — Trivy filesystem (source + lockfile + Dockerfile)
+  #
+  # No Docker daemon needed: Trivy scans the filesystem directly. The Node base
+  # image is digest-pinned in the Dockerfile and tracked by Renovate, so it is
+  # deliberately out of scope here; scanning it on every push only produces
+  # upstream CVEs nobody can fix from this repo.
+  # ---------------------------------------------------------------------------
+  image-scan:
+    name: image-scan (trivy fs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
+            -e TRIVY_NO_PROGRESS=true \
+            aquasec/trivy:0.58.1 fs \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --format table \
+              .

@@ -1,0 +1,48 @@
+S3 Explorer
+Copyright (c) 2026 S3 Explorer contributors
+
+This product is licensed under the MIT License. See LICENSE for the full text.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+Bundled web fonts
+  The files under public/fonts/ are redistributed unmodified.
+
+  - Inter — Copyright (c) 2016 The Inter Project Authors
+    License: SIL Open Font License 1.1
+    https://github.com/rsms/inter
+
+  - Source Serif 4 — Copyright (c) 2014-2023 Adobe
+    License: SIL Open Font License 1.1
+    https://github.com/adobe-fonts/source-serif
+
+  - JetBrains Mono — Copyright (c) 2020 The JetBrains Mono Project Authors
+    License: SIL Open Font License 1.1
+    https://github.com/JetBrains/JetBrainsMono
+
+  The full text of the SIL OFL 1.1 is available at
+  https://openfontlicense.org/open-font-license-official-text/
+
+npm dependencies
+  Runtime and development dependencies are declared in package.json and pinned in
+  package-lock.json. Each package keeps its own license, listed in its package
+  metadata (most are MIT or Apache-2.0). Generate a full report with:
+
+      npx license-checker --summary
+      # or
+      npm ls --all
+
+Container base images
+  The application image is built from official Node.js and Caddy images, which
+  bundle their own third-party components and licenses.
+
+--------------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------------
+
+Amazon S3, AWS, MinIO, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean,
+Vultr and any other product names mentioned in the documentation are trademarks
+or registered trademarks of their respective owners. Use of these names is for
+identification purposes only and does not imply endorsement or affiliation.
