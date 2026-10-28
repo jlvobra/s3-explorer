@@ -2,14 +2,16 @@
 
 Fecha del análisis: 2026-10-28
 Herramienta: [Graphify](https://github.com/Graphify-Labs/graphify) `graphify 0.9.97`
-Backend de extracción: **solo AST** (`--code-only`, sin LLM) — no se usó ningún proveedor
-de modelo, así que las comunidades quedan con etiquetas genéricas (`Community N`) y las
-aristas son 99 % `EXTRACTED` (1 % `INFERRED`).
+Backend de extracción: **solo AST** (`--code-only`, sin LLM). No hay ninguna API key de
+modelo configurada en este equipo (ver "Pendiente" al final), así que las comunidades
+quedan con etiquetas genéricas (`Community N`) y las aristas son 99 % `EXTRACTED`
+(1 % `INFERRED`).
 
 ## Cómo se generó
 
 ```bash
 uv tool install graphifyy        # instala el CLI `graphify` (Python 3.12 + uv 0.12.9)
+uv tool update-shell            # deja C:\Users\jlvob\.local\bin en el PATH de usuario
 graphify extract . --code-only   # AST sobre 116 archivos de código
 graphify cluster-only . --no-label
 ```
@@ -90,6 +92,31 @@ acoplamiento alto está **en el frontend, no en el servidor**.
   pequeños (SPA core, auth, guarda SSRF), pero el tamaño del proyecto no lo exige.
 - `vitest` actúa como puente de betweenness (0.297) entre comunidades: el acoplamiento
   real que mide el grafo es *de tests*, no de producción.
+
+## Pendiente: etiquetas semánticas de comunidades
+
+Las 54 comunidades siguen como `Community N` porque **no hay ningún backend de LLM
+configurado** en este equipo (verificado: `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY` y
+`OLLAMA_BASE_URL` están todas vacías, y `graphify provider list` no tiene proveedores
+custom). El etiquetado requiere tu propia API key.
+
+Comando exacto, una vez que tengas una key exportada en el entorno:
+
+```bash
+# backend según el proveedor de tu key:
+#   gemini | kimi | claude | openai | deepseek | ollama
+export GEMINI_API_KEY=...                 # o la que corresponda (PowerShell: $env:GEMINI_API_KEY="...")
+graphify label . --backend=gemini
+
+# alternativas:
+graphify label . --backend=deepseek --model=deepseek-chat
+graphify cluster-only . --backend=openai  # re-clusteriza y renombra de una vez
+```
+
+`graphify label .` reescribe los nombres de comunidad en `graphify-out/` y regenera
+`GRAPH_REPORT.md`; vuelve a correr los comandos de "Cómo repetirlo" si quieres el reporte
+con los nombres nuevos. Nada de esto se commitea: `graphify-out/` está en `.gitignore`.
 
 ## Cómo repetirlo
 
