@@ -1,0 +1,55 @@
+# =============================================================================
+# S3 Explorer — CodeQL static analysis
+# =============================================================================
+# Free for public repositories. Complements the gitleaks / Trivy / npm audit
+# gates in ci.yml with semantic taint tracking over src/ (server) and
+# public/src/ (SPA).
+#
+# Not a required status check yet — let it run for a while and triage the
+# alerts under Security -> Code scanning before gating merges on it.
+# =============================================================================
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # --ignore-scripts skips better-sqlite3's node-gyp rebuild: CodeQL only
+      # parses sources, it never loads the native binding.
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm run build
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
