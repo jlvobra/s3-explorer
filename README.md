@@ -240,7 +240,7 @@ En MinIO/Vultr/etc. usa la política equivalente del proveedor.
 | `ADMIN_USER` | — | Usuario admin inicial (solo se usa al primer arranque) |
 | `ADMIN_PASS` | — | Contraseña admin inicial (cámbiala desde la UI tras el primer login) |
 | `SESSION_SECRET` | aleatorio efímero | Clave HMAC para firmar cookies. **DEBE estar set en producción.** Generar: `openssl rand -hex 32` |
-| `TOTP_ENCRYPTION_KEY` | aleatorio efímero | Clave AES-256-GCM (64 hex chars) para cifrar TOTP secrets en `users.json`. **DEBE estar set en producción** o los TOTP enrolados se invalidan al reiniciar. Generar: `openssl rand -hex 32` |
+| `TOTP_ENCRYPTION_KEY` | aleatorio efímero | Clave AES-256-GCM (64 hex chars) para cifrar TOTP secrets en la base de datos SQLite (`app.db`). **DEBE estar set en producción** o los TOTP enrolados se invalidan al reiniciar. Generar: `openssl rand -hex 32` |
 | `SESSION_TTL_SECONDS` | `14400` (4h) | TTL absoluto de la sesión desde el login |
 | `MAX_UPLOAD_BYTES` | `524288000` (500 MB) | Límite por archivo subido |
 | `ALLOWED_HOSTS` | `localhost:4569,...` | Host headers aceptados (CSRF/DNS rebinding). Docker compose lo setea con `${DOMAIN}` |
@@ -401,7 +401,7 @@ Reiniciar **invalida todas las sesiones activas** (la lista de revocación está
 
 ```bash
 docker compose down              # detiene, conserva datos
-docker compose down -v           # detiene + borra users.json, certs Caddy (DESTRUCTIVO)
+docker compose down -v           # detiene + borra app.db, certs Caddy (DESTRUCTIVO)
 ```
 
 ---
@@ -450,7 +450,7 @@ docker compose down -v           # detiene + borra users.json, certs Caddy (DEST
 
 **Lo que NO protege:**
 - Acceso físico al equipo del usuario con sesión activa → atacante puede operar como el user (la passphrase de bóveda se cachea en memoria del browser hasta cerrar la pestaña).
-- Compromiso del servidor → atacante puede leer `users.json` (passwords hasheados, secrets TOTP en claro).
+- Compromiso del servidor → atacante puede leer `app.db` (passwords hasheados con argon2id, secrets TOTP cifrados con AES-256-GCM).
 - Phishing — si el usuario teclea su password+TOTP en un sitio falso, el atacante puede entrar antes que expire el código (30s).
 
 Para entornos de alto riesgo, considera FIDO2/WebAuthn (no implementado).
