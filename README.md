@@ -353,11 +353,32 @@ Si tienes ELK/Loki/Splunk, redirige stdout para auditoría centralizada.
 
 ### Backup de usuarios
 
+Todo el estado de la app vive en un único archivo SQLite: `${DATA_DIR}/app.db` (`/data/app.db` dentro del contenedor, en el volumen `users_data`). Ya **no** existe `users.json` — la 1.2.0 migró a SQLite y un importador de una sola vez (`src/startup/migrate-users-json.ts`) sólo absorbe el archivo legado si lo encuentra.
+
+La base corre en modo **WAL**, así que copiar `app.db` con el proceso vivo puede perder las últimas transacciones (quedan en `app.db-wal`). La forma consistente es usar la API de backup de SQLite desde el propio contenedor:
+
 ```bash
-docker compose cp s3-explorer:/data/users.json ./users-backup-$(date +%F).json
+# 1. Snapshot consistente dentro del contenedor (soporta WAL)
+docker compose exec s3-explorer node -e "require('better-sqlite3')(process.env.DATA_DIR + '/app.db').backup(process.env.DATA_DIR + '/app-backup.db')"
+
+# 2. Lo traes al host y limpias el temporal
+docker compose cp s3-explorer:/data/app-backup.db ./app-backup-$(date +%F).db
+docker compose exec s3-explorer rm /data/app-backup.db
 ```
 
-El archivo contiene `bcrypt` hashes de passwords y los secrets TOTP de cada usuario. **Trátalo como secret** (cifra en reposo, no lo commitees).
+Alternativa equivalente y más simple si puedes asumir el downtime: `docker compose stop s3-explorer`, luego `docker compose cp s3-explorer:/data/app.db ./app-backup-$(date +%F).db`, y `docker compose start s3-explorer`.
+
+Qué contiene (`src/db/migrations/`, `src/auth/`):
+
+| Dato | Cómo se guarda |
+|---|---|
+| `users.password_hash` | **argon2id** (m=19 MiB, t=2, p=1). Los hashes bcrypt heredados se aceptan y se re-hashean a argon2id en el siguiente login |
+| `users.totp_secret` | Cifrado **AES-256-GCM** con `TOTP_ENCRYPTION_KEY` (formato `enc:v1:…`); filas antiguas pueden estar en claro |
+| `users.recovery_codes_hashed` | Array JSON de hashes **bcrypt** de los códigos de recuperación (los usados quedan en `null`) |
+| `revoked_sessions` | Lista de revocación de sesiones (`jti` + expiración) |
+| `bucket_index`, `bucket_index_fts`, `bucket_index_status` | Índice de claves por usuario/conexión/bucket; `bucket_index_fts` es la tabla virtual **FTS5** (tokenizer `unicode61`) que hace la búsqueda rápida |
+
+**Trátalo como secret**: contiene material de autenticación. Cifra el archivo en reposo, no lo commitees y no lo subas a almacenamiento sin cifrar. Sin `TOTP_ENCRYPTION_KEY`, los secrets TOTP del backup son indescifrables — guarda esa clave por separado (password manager), nunca junto al backup.
 
 ### Backup de certificados Caddy (Let's Encrypt)
 
