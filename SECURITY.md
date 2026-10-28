@@ -8,7 +8,7 @@ Report privately through the **GitHub Security Advisory** flow — this is the
 only private channel:
 
 - GitHub: **Security → Report a vulnerability** (private security advisory).
-  Direct link: `https://github.com/<owner>/s3-explorer/security/advisories/new`
+  Direct link: `https://github.com/jlvobra/s3-explorer/security/advisories/new`
 
 Please include: affected version/commit, a description, reproduction steps or a
 proof of concept, and the impact you believe it has. We aim to acknowledge

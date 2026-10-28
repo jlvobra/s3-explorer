@@ -33,7 +33,7 @@ Consola web tipo MinIO para administrar buckets en cualquier almacenamiento comp
 ### 1. Clonar el repositorio
 
 ```bash
-git clone https://github.com/<owner>/s3-explorer.git
+git clone https://github.com/jlvobra/s3-explorer.git
 cd s3-explorer
 ```
 
@@ -314,7 +314,7 @@ Para self-hosted: corre el contenedor `renovate/renovate` con un token de GitHub
 
 ```bash
 # Primera vez:
-git clone https://github.com/<owner>/s3-explorer.git
+git clone https://github.com/jlvobra/s3-explorer.git
 cd s3-explorer
 cp .env.example .env
 # ... edita .env con secretos ...
@@ -459,7 +459,7 @@ Para entornos de alto riesgo, considera FIDO2/WebAuthn (no implementado).
 
 ## Licencia
 
-[MIT](LICENSE) — Copyright (c) 2026 S3 Explorer contributors.
+[MIT](LICENSE) — Copyright (c) 2026 jlvobra.
 
 ## Contribuir
 

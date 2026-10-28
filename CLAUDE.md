@@ -169,4 +169,4 @@ See `SECURITY.md` for the full posture (OWASP Top 10 mapping, disclosure policy,
 
 Git over SSH to github.com works normally. If a push/fetch fails, retry over HTTPS with the
 GitHub CLI credential helper:
-`git push "https://github.com/<owner>/s3-explorer.git" <branch>`.
+`git push "https://github.com/jlvobra/s3-explorer.git" <branch>`.
