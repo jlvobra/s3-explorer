@@ -23,6 +23,10 @@ yarn-error.log*
 # Local data
 dev-data/
 data/
+graphify-out/
+
+# Machine-specific compose override (ports taken by tailscaled/AgentService)
+docker-compose.local.yml
 
 # Build artifacts
 dist/
